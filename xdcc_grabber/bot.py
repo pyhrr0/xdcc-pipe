@@ -2,22 +2,20 @@ import asyncio
 import random
 import ssl
 import struct
-import os
 import irc3
 
 
 class XDCCGet(irc3.dcc.client.DCCGet):
     def data_received(self, data):
         self.set_timeout()
-        self.fd.write(data)
+        self.tx.send_bytes(data)
         self.bytes_received += len(data)
         self.transport.write(struct.pack("!Q", self.bytes_received))
 
     @staticmethod
-    async def initiate(bot, mask, target, size, host, port):
+    async def initiate(bot, mask, size, host, port):
         return bot.context.dcc.create(
-            XDCCGet, mask, filepath=target, filesize=int(size),
-            host=host, port=port)
+            XDCCGet, bot.tx, mask, filesize=size, host=host, port=port)
 
 
 @irc3.plugin
@@ -45,17 +43,15 @@ class XDCCBot:
         name, host, port, size, *_ = kwargs["ctcp"].split()[2:]
         self.context.log.info("%s is offering %s", mask.nick, name)
 
-        target = os.path.join('/tmp', name)
-
         conn = await self.context.create_task(
-            XDCCGet.initiate(self, mask, target, size, host, port))
+            XDCCGet.initiate(self, mask, int(size), host, port))
         await conn.closed
 
         self.context.log.info("file received from %s", mask.nick)
         self.context.config.file_received.set_result(True)
 
     @ staticmethod
-    def fetch(pack):
+    def forward(pack, websocket):
         loop = asyncio.get_event_loop()
         file_received = asyncio.Future()
 
@@ -79,5 +75,6 @@ class XDCCBot:
             cfg[k] = nick
 
         receiver = irc3.IrcBot.from_config(cfg)
+        receiver.tx = websocket
         loop.call_soon(receiver.run, False)
         loop.run_until_complete(file_received)
