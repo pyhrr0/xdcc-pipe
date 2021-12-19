@@ -1,38 +1,64 @@
+import json
+import urllib.parse
 import asyncio
-import signal
+import uvicorn
+import uuid
+
 from fastapi import FastAPI
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 from websockets import connect as ws_connect
+from websockets.exceptions import ConnectionClosedOK
 
-from bot import XDCCBot
+from .bot import XDCCBot
 
 
 class XDCCPipe():
     app = FastAPI()
 
-    @app.websocket("/")
-    async def websocket_endpoint(websocket: WebSocket, client_id: int) -> None:
+    @app.websocket("/{client_id}")
+    async def forward_pack(websocket: WebSocket, client_id: str) -> None:
         await websocket.accept()
         try:
             pack = await websocket.receive_json()
-            await XDCCBot().forward(pack, websocket)
+
+            bot = XDCCBot()
+            await bot.forward(pack, websocket)
+
+            await bot.terminate()
             await websocket.close()
         except WebSocketDisconnect:
+            await bot.terminate()
             print(f"Client #{client_id} has disconnected.")
 
     @staticmethod
-    async def receive_pack(ws_url, filename, network, channel, bot, packnum):
-        async with ws_connect(ws_url) as websocket:
-            loop = asyncio.get_running_loop()
-            loop.add_signal_handler(
-                signal.SIGTERM, loop.create_task, websocket.close())
+    async def request_pack(ws_url, filename, network, channels, bot, packnum):
+        client_id = uuid.uuid4()
 
-            await websocket.send_json(
-                {'network': network, 'channel': channel, 'bot': bot,
-                 'packnum': packnum})
+        async with ws_connect(f'{ws_url}/{client_id}') as websocket:
+            try:
+                await websocket.send(json.dumps(
+                    {'network': network, 'channels': channels, 'bot': bot,
+                     'packnum': packnum}))
 
-            with open(filename, 'a+') as fp:
-                for chunk in websocket.recv():
-                    fp.write(chunk)
+                with open(filename, 'wb') as fp:
+                    while True:
+                        chunk = await websocket.recv()
+                        fp.write(chunk)
 
-            await websocket.close()
+                await websocket.close()
+            except ConnectionClosedOK:
+                pass
+            # TODO handle KeyboardInterrupt
+
+
+def run_server(**kwargs):
+    url = urllib.parse.urlparse(kwargs['ws_url'])
+    uvicorn.run(XDCCPipe.app, host=url.hostname, port=url.port)
+
+
+def run_client(**kwargs):
+    asyncio.run(
+        XDCCPipe.request_pack(
+            kwargs['ws_url'], kwargs['output_file'],
+            kwargs['network'], kwargs['channel'],
+            kwargs['bot'], kwargs['pack_num']))

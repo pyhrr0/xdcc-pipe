@@ -9,4 +9,7 @@ setup(
             'xdcc-grabber = xdcc_grabber.__main__:main']},
     install_requires=[
         'irc3>=1.1.7',
+        'fastapi>=0.70.1',
+        'uvicorn>=0.16.0',
+        'websockets>=10.1',
     ])
